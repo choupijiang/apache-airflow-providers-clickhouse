@@ -1,5 +1,5 @@
-from typing import Dict, Any, Iterable, Union
-from urllib.parse import parse_qsl, quote, urlencode
+from typing import Any, Iterable, Union
+from urllib.parse import quote, urlencode, unquote, parse_qs, urlparse, urlunparse
 
 from airflow.exceptions import AirflowException
 from airflow.hooks.dbapi import DbApiHook
@@ -95,9 +95,10 @@ class ClickhouseHook(DbApiHook):
         password: str = conn.password
         database: str = conn.schema
         click_kwargs = conn.extra_dejson.copy()
-        if "http_port" in click_kwargs:
-            click_kwargs.pop("http_port")
-            click_kwargs.pop("extra__clickhouse__http_port")
+        # if "http_port" in click_kwargs:
+        click_kwargs.pop("http_port", None)
+        # if "extra__clickhouse__http_port" in click_kwargs:
+        click_kwargs.pop("extra__clickhouse__http_port", None)
         if password is None:
             password = ''
         click_kwargs.update(port=port)
@@ -109,7 +110,23 @@ class ClickhouseHook(DbApiHook):
         result.connection.connect()
         return result
 
+
     def get_uri(self) -> str:
+        conn_id = getattr(self, self.conn_name_attr)
+        airflow_conn = self.get_connection(conn_id)
+        if airflow_conn.conn_type is None:
+            airflow_conn.conn_type = self.conn_type
+        airflow_uri = unquote(airflow_conn.get_uri())
+        airflow_uri = airflow_uri.replace("/?", "?")
+        url_parts = urlparse(airflow_uri)
+        query_params = parse_qs(url_parts.query)
+        query_params.pop('__extra__', None)
+        url_parts = url_parts._replace(query=urlencode(query_params, doseq=True))
+        sqlalchemy_uri = urlunparse(url_parts)
+        return sqlalchemy_uri
+
+
+    def get_jdbc_uri(self) -> str:
         """Return connection in URI format."""
 
         # conn = self.get_connection(getattr(self, self.conn_name_attr))
@@ -162,8 +179,11 @@ class ClickhouseHook(DbApiHook):
     def run(self, sql: Union[str, Iterable[str]], parameters: dict = None,
             with_column_types: bool = True, **kwargs) -> Any:
 
+        queries: Iterable[str] = ...
         if isinstance(sql, str):
             queries = (sql,)
+        else:
+            queries = sql
         client = self.get_conn()
         result = None
         index = 0
